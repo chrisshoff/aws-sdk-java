@@ -14,12 +14,18 @@
  */
 package com.amazonaws.services.s3.transfer.internal;
 
+import com.amazonaws.services.s3.model.PartETag;
 import com.amazonaws.services.s3.transfer.TransferProgress;
 
 public class TransferProgressImpl extends TransferProgress {
     
     public synchronized void updateProgress(long bytes) {
         this.bytesTransferred += bytes;
+    }
+    
+    public synchronized void updateProgress(PartETag partETag, String uploadId) {
+        this.partETag = partETag;
+        this.uploadId = uploadId;
     }
 
     /**

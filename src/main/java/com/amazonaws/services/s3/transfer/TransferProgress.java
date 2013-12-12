@@ -14,12 +14,16 @@
  */
 package com.amazonaws.services.s3.transfer;
 
+import com.amazonaws.services.s3.model.PartETag;
+
 /**
  * Describes the progress of a transfer.
  */
 public abstract class TransferProgress {
     protected volatile long bytesTransferred = 0;
     protected volatile long totalBytesToTransfer = -1;
+    protected volatile PartETag partETag = null;
+    protected volatile String uploadId = null;
 
     /**
      * @deprecated Replaced by {@link #getBytesTransferred()}
@@ -35,6 +39,10 @@ public abstract class TransferProgress {
      */
     public long getBytesTransferred() {
         return bytesTransferred;
+    }
+    
+    public PartETag getPartETag() {
+    	return partETag;
     }
 
     /**

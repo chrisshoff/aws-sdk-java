@@ -15,8 +15,11 @@
 package com.amazonaws.services.s3.transfer.internal;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.amazonaws.services.s3.internal.InputSubstream;
+import com.amazonaws.services.s3.model.PartETag;
 import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.UploadPartRequest;
 
@@ -39,6 +42,9 @@ public class UploadPartRequestFactory {
     private int partNumber = 1;
     private long offset = 0;
     private long remainingBytes;
+    private List<PartETag> alreadyUploadedParts;
+    private long previouslyUpdatedBytes = 0;
+    private List<Long> previouslyUpdatedBytesToSend = new ArrayList<Long>();
 
     public UploadPartRequestFactory(PutObjectRequest putObjectRequest, String uploadId, long optimalPartSize) {
         this.putObjectRequest = putObjectRequest;
@@ -48,6 +54,25 @@ public class UploadPartRequestFactory {
         this.key = putObjectRequest.getKey();
         this.file = TransferManagerUtils.getRequestFile(putObjectRequest);
         this.remainingBytes = TransferManagerUtils.getContentLength(putObjectRequest);
+    }
+    
+    public UploadPartRequestFactory(PutObjectRequest putObjectRequest, String uploadId, long optimalPartSize, List<PartETag> alreadyUploadedParts) {
+        this.putObjectRequest = putObjectRequest;
+        this.uploadId = uploadId;
+        this.optimalPartSize = optimalPartSize;
+        this.bucketName = putObjectRequest.getBucketName();
+        this.key = putObjectRequest.getKey();
+        this.file = TransferManagerUtils.getRequestFile(putObjectRequest);
+        this.remainingBytes = TransferManagerUtils.getContentLength(putObjectRequest);
+        this.alreadyUploadedParts = alreadyUploadedParts;
+    }
+    
+    public synchronized List<Long> getPreviouslyUpdatedBytesToSend() {
+    	return previouslyUpdatedBytesToSend;
+    }
+    
+    public synchronized void resetPreviouslyUpdatedBytesToSend() {
+    	previouslyUpdatedBytesToSend = new ArrayList<Long>();
     }
 
     public synchronized boolean hasMoreRequests() {
@@ -59,23 +84,38 @@ public class UploadPartRequestFactory {
         boolean isLastPart = (remainingBytes - partSize <= 0);
 
         UploadPartRequest request = null;
-        if (putObjectRequest.getInputStream() != null) {
-            request = new UploadPartRequest()
-                .withBucketName(bucketName)
-                .withKey(key)
-                .withUploadId(uploadId)
-                .withInputStream(new InputSubstream(putObjectRequest.getInputStream(), 0, partSize, isLastPart))
-                .withPartNumber(partNumber++)
-                .withPartSize(partSize);
+        
+        if (alreadyUploaded(partNumber)) {
+        	offset += partSize;
+        	previouslyUpdatedBytes += partSize;
+            remainingBytes -= partSize;
+            partNumber++;
+            
+            return getNextUploadPartRequest();
         } else {
-            request = new UploadPartRequest()
-                .withBucketName(bucketName)
-                .withKey(key)
-                .withUploadId(uploadId)
-                .withFile(file)
-                .withFileOffset(offset)
-                .withPartNumber(partNumber++)
-                .withPartSize(partSize);
+	        if (putObjectRequest.getInputStream() != null) {
+	            request = new UploadPartRequest()
+	                .withBucketName(bucketName)
+	                .withKey(key)
+	                .withUploadId(uploadId)
+	                .withInputStream(new InputSubstream(putObjectRequest.getInputStream(), 0, partSize, isLastPart))
+	                .withPartNumber(partNumber++)
+	                .withPartSize(partSize);
+	        } else {
+	            request = new UploadPartRequest()
+	                .withBucketName(bucketName)
+	                .withKey(key)
+	                .withUploadId(uploadId)
+	                .withFile(file)
+	                .withFileOffset(offset)
+	                .withPartNumber(partNumber++)
+	                .withPartSize(partSize);
+	        }
+	        
+	        if (previouslyUpdatedBytes > 0) {
+	        	previouslyUpdatedBytesToSend.add(previouslyUpdatedBytes);
+	        	previouslyUpdatedBytes = 0;
+	        }
         }
 
         offset += partSize;
@@ -83,7 +123,16 @@ public class UploadPartRequestFactory {
         
         request.setLastPart(isLastPart);
         request.setGeneralProgressListener(putObjectRequest.getGeneralProgressListener());
-
+        
         return request;
+    }
+    
+    private boolean alreadyUploaded(int partNumber) {
+    	if (alreadyUploadedParts == null) { return false; }
+    	for (PartETag part : alreadyUploadedParts) {
+    		if (part.getPartNumber() == partNumber) { return true; }
+    	}
+    	
+    	return false;
     }
 }

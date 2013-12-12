@@ -25,6 +25,10 @@ public class TransferProgressUpdatingListener implements ProgressListener {
     }
         
     public void progressChanged(ProgressEvent progressEvent) {
-        transferProgress.updateProgress(progressEvent.getBytesTransferred());
+    	if (progressEvent.getPartETag() != null) {
+    		transferProgress.updateProgress(progressEvent.getPartETag(), progressEvent.getUploadId());
+    	} else {
+    		transferProgress.updateProgress(progressEvent.getBytesTransferred());
+    	}
     }
 }

@@ -28,8 +28,8 @@ import org.apache.commons.logging.LogFactory;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.event.ProgressEvent;
-import com.amazonaws.event.ProgressListenerChain;
 import com.amazonaws.event.ProgressListenerCallbackExecutor;
+import com.amazonaws.event.ProgressListenerChain;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.CompleteMultipartUploadRequest;
 import com.amazonaws.services.s3.model.CompleteMultipartUploadResult;
@@ -66,6 +66,7 @@ public class UploadMonitor implements Callable<UploadResult>, TransferMonitor {
      */
     private String uploadId;
     private final List<Future<PartETag>> futures = new ArrayList<Future<PartETag>>();
+    private List<PartETag> alreadyUploadedParts = new ArrayList<PartETag>();
 
     /*
      * State for clients wishing to poll for completion
@@ -125,6 +126,7 @@ public class UploadMonitor implements Callable<UploadResult>, TransferMonitor {
         this.progressListenerChainCallbackExecutor = ProgressListenerCallbackExecutor
                 .wrapListener(progressListenerChain);
         this.transfer = transfer;
+        this.alreadyUploadedParts = multipartUploadCallable.getAlreadyUploadedParts();
 
         setNextFuture(threadPool.submit(this));
     }
@@ -188,7 +190,6 @@ public class UploadMonitor implements Callable<UploadResult>, TransferMonitor {
      * returns the result; otherwise, reschedules to check back later.
      */
     private UploadResult upload() throws Exception, InterruptedException {
-
         UploadResult result = multipartUploadCallable.call();
 
         if ( result != null ) {
@@ -255,6 +256,10 @@ public class UploadMonitor implements Callable<UploadResult>, TransferMonitor {
             } catch (Exception e) {
                 throw new AmazonClientException("Unable to upload part: " + e.getCause().getMessage(), e.getCause());
             }
+        }
+        
+        if (alreadyUploadedParts != null) {
+        	partETags.addAll(alreadyUploadedParts);
         }
         return partETags;
     }

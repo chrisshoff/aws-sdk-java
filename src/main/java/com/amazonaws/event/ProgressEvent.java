@@ -14,6 +14,8 @@
  */
 package com.amazonaws.event;
 
+import com.amazonaws.services.s3.model.PartETag;
+
 /**
  * Notification of a progress change on a transfer. Typically this means notice
  * that another chunk of bytes was transferred, but it also signals other types
@@ -48,6 +50,9 @@ public class ProgressEvent {
      * represents.
      */
     protected int eventCode;
+    
+    protected PartETag partETag;
+    protected String uploadId;
 
 
     public ProgressEvent(long bytesTransferred) {
@@ -57,6 +62,12 @@ public class ProgressEvent {
     public ProgressEvent(int eventCode, long bytesTransferred) {
         this.eventCode = eventCode;
         this.bytesTransferred = bytesTransferred;
+    }
+    
+    public ProgressEvent(int eventCode, String uploadId, PartETag partETag) {
+    	this.eventCode = eventCode;
+    	this.uploadId = uploadId;
+    	this.partETag = partETag;
     }
 
 
@@ -102,5 +113,21 @@ public class ProgressEvent {
     public void setEventCode(int eventType) {
         this.eventCode = eventType;
     }
+
+    public PartETag getPartETag() {
+        return partETag;
+    }
+
+    public void setPartETag(PartETag partETag) {
+        this.partETag = partETag;
+    }
+
+	public String getUploadId() {
+		return uploadId;
+	}
+
+	public void setUploadId(String uploadId) {
+		this.uploadId = uploadId;
+	}
 
 }

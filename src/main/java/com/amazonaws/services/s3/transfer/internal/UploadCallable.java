@@ -19,15 +19,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
-import com.amazonaws.event.ProgressListenerChain;
 import com.amazonaws.event.ProgressEvent;
 import com.amazonaws.event.ProgressListenerCallbackExecutor;
+import com.amazonaws.event.ProgressListenerChain;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3EncryptionClient;
 import com.amazonaws.services.s3.model.AbortMultipartUploadRequest;
@@ -39,9 +40,9 @@ import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.PutObjectResult;
 import com.amazonaws.services.s3.model.StorageClass;
 import com.amazonaws.services.s3.model.UploadPartRequest;
+import com.amazonaws.services.s3.transfer.Transfer.TransferState;
 import com.amazonaws.services.s3.transfer.TransferManager;
 import com.amazonaws.services.s3.transfer.TransferManagerConfiguration;
-import com.amazonaws.services.s3.transfer.Transfer.TransferState;
 import com.amazonaws.services.s3.transfer.model.UploadResult;
 
 public class UploadCallable implements Callable<UploadResult> {
@@ -50,21 +51,23 @@ public class UploadCallable implements Callable<UploadResult> {
     private final PutObjectRequest putObjectRequest;
     private String multipartUploadId;
     private final UploadImpl upload;
+    private final List<PartETag> alreadyUploadedParts;
 
     private static final Log log = LogFactory.getLog(UploadCallable.class);
     private final TransferManagerConfiguration configuration;
     private final ProgressListenerCallbackExecutor progressListenerChainCallbackExecutor;
     private final List<Future<PartETag>> futures = new ArrayList<Future<PartETag>>();
 
-    public UploadCallable(TransferManager transferManager, ExecutorService threadPool, UploadImpl upload, PutObjectRequest putObjectRequest, ProgressListenerChain progressListenerChain) {
+    public UploadCallable(TransferManager transferManager, ExecutorService threadPool, UploadImpl upload, PutObjectRequest putObjectRequest, ProgressListenerChain progressListenerChain, String uploadId, List<PartETag> alreadyUploadedParts) {
         this.s3 = transferManager.getAmazonS3Client();
         this.configuration = transferManager.getConfiguration();
-
+        this.multipartUploadId = uploadId;
         this.threadPool = threadPool;
         this.putObjectRequest = putObjectRequest;
         this.progressListenerChainCallbackExecutor = ProgressListenerCallbackExecutor
                 .wrapListener(progressListenerChain);
         this.upload = upload;
+        this.alreadyUploadedParts = alreadyUploadedParts;
     }
 
     /**
@@ -72,7 +75,7 @@ public class UploadCallable implements Callable<UploadResult> {
      */
     @Deprecated
     public UploadCallable(TransferManager transferManager, ExecutorService threadPool, UploadImpl upload, PutObjectRequest putObjectRequest, com.amazonaws.services.s3.transfer.internal.ProgressListenerChain progressListenerChain) {
-        this(transferManager, threadPool, upload, putObjectRequest, progressListenerChain.transformToGeneralProgressListenerChain());
+        this(transferManager, threadPool, upload, putObjectRequest, progressListenerChain.transformToGeneralProgressListenerChain(), null, null);
     }
 
     List<Future<PartETag>> getFutures() {
@@ -91,7 +94,11 @@ public class UploadCallable implements Callable<UploadResult> {
     	return TransferManagerUtils.shouldUseMultipartUpload(putObjectRequest, configuration);
     }
 
-    public UploadResult call() throws Exception {
+    public List<PartETag> getAlreadyUploadedParts() {
+		return alreadyUploadedParts;
+	}
+
+	public UploadResult call() throws Exception {
         upload.setState(TransferState.InProgress);
         if ( isMultipartUpload() ) {
             fireProgressEvent(ProgressEvent.STARTED_EVENT_CODE);
@@ -127,11 +134,12 @@ public class UploadCallable implements Callable<UploadResult> {
         boolean isUsingEncryption = s3 instanceof AmazonS3EncryptionClient;
         long optimalPartSize = getOptimalPartSize(isUsingEncryption);
 
-        multipartUploadId = initiateMultipartUpload(putObjectRequest);
+        if (multipartUploadId == null) {
+        	multipartUploadId = initiateMultipartUpload(putObjectRequest);
+        }
 
         try {
-            UploadPartRequestFactory requestFactory = new UploadPartRequestFactory(putObjectRequest, multipartUploadId, optimalPartSize);
-
+            UploadPartRequestFactory requestFactory = new UploadPartRequestFactory(putObjectRequest, multipartUploadId, optimalPartSize, alreadyUploadedParts);
             if (TransferManagerUtils.isUploadParallelizable(putObjectRequest, isUsingEncryption)) {
                 uploadPartsInParallel(requestFactory);
                 return null;
@@ -211,7 +219,22 @@ public class UploadCallable implements Callable<UploadResult> {
         while (requestFactory.hasMoreRequests()) {
             if (threadPool.isShutdown()) throw new CancellationException("TransferManager has been shutdown");
             UploadPartRequest request = requestFactory.getNextUploadPartRequest();
-            futures.add(threadPool.submit(new UploadPartCallable(s3, request)));
+            if (requestFactory.getPreviouslyUpdatedBytesToSend().size() > 0) {
+            	for (Long bytes : requestFactory.getPreviouslyUpdatedBytesToSend()) {
+            		fireProgressEvent(ProgressEvent.PART_STARTED_EVENT_CODE, bytes);
+            	}
+            	
+            	requestFactory.resetPreviouslyUpdatedBytesToSend();
+            }
+            Future<PartETag> completedETag = threadPool.submit(new UploadPartCallable(s3, request));
+            try {
+				fireProgressEvent(completedETag.get());
+			} catch (InterruptedException e) {
+				log.error("There was a problem getting the completed partETag.", e);
+			} catch (ExecutionException e) {
+				log.error("There was a problem getting the completed partETag.", e);
+			}
+            futures.add(completedETag);
         }
     }
 
@@ -235,11 +258,24 @@ public class UploadCallable implements Callable<UploadResult> {
 
         return uploadId;
     }
+    
+    private void fireProgressEvent(final int eventType, long bytesAlreadyUploaded) {
+    	if (progressListenerChainCallbackExecutor == null) return;
+        ProgressEvent event = new ProgressEvent(bytesAlreadyUploaded);
+        event.setEventCode(eventType);
+        progressListenerChainCallbackExecutor.progressChanged(event);
+    }
 
     private void fireProgressEvent(final int eventType) {
         if (progressListenerChainCallbackExecutor == null) return;
         ProgressEvent event = new ProgressEvent(0);
         event.setEventCode(eventType);
         progressListenerChainCallbackExecutor.progressChanged(event);
+    }
+    
+    private void fireProgressEvent(PartETag tag) {
+    	if (progressListenerChainCallbackExecutor == null) return;
+    	ProgressEvent event = new ProgressEvent(2048, multipartUploadId, tag);
+    	progressListenerChainCallbackExecutor.progressChanged(event);
     }
 }

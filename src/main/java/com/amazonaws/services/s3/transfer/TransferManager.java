@@ -25,8 +25,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.logging.Log;
@@ -55,6 +55,7 @@ import com.amazonaws.services.s3.model.MultipartUpload;
 import com.amazonaws.services.s3.model.MultipartUploadListing;
 import com.amazonaws.services.s3.model.ObjectListing;
 import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.model.PartETag;
 import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
@@ -302,7 +303,7 @@ public class TransferManager {
      */
     public Upload upload(final String bucketName, final String key, final InputStream input, ObjectMetadata objectMetadata)
         throws AmazonServiceException, AmazonClientException {
-        return upload(new PutObjectRequest(bucketName, key, input, objectMetadata));
+        return upload(new PutObjectRequest(bucketName, key, input, objectMetadata), null, null);
     }
 
     /**
@@ -338,9 +339,9 @@ public class TransferManager {
      */
     public Upload upload(final String bucketName, final String key, final File file)
         throws AmazonServiceException, AmazonClientException {
-        return upload(new PutObjectRequest(bucketName, key, file));
+        return upload(new PutObjectRequest(bucketName, key, file), null, null);
     }
-
+    
     /**
      * <p>
      * Schedules a new transfer to upload data to Amazon S3. This method is
@@ -374,7 +375,49 @@ public class TransferManager {
      */
     public Upload upload(final PutObjectRequest putObjectRequest)
         throws AmazonServiceException, AmazonClientException {
-        return upload(putObjectRequest, null);
+        return upload(putObjectRequest, null, null, null);
+    }
+
+    /**
+     * <p>
+     * Schedules a new transfer to upload data to Amazon S3. This method is
+     * non-blocking and returns immediately (i.e. before the upload has
+     * finished).
+     * </p>
+     * <p>
+     * Use the returned <code>Upload</code> object to query the progress of the
+     * transfer, add listeners for progress events, and wait for the upload to
+     * complete.
+     * </p>
+     * <p>
+     * If resources are available, the upload will begin immediately.
+     * Otherwise, the upload is scheduled and started as soon as
+     * resources become available.
+     * </p>
+     *
+     * @param putObjectRequest
+     *            The request containing all the parameters for the upload.
+     *            
+     * @param uploadId
+     * 			  An existing upload id to use for resuming a prior upload.
+     * 
+     * @param alreadyUploadedParts
+     *            A list of PartETags to use for resuming a prior upload.
+     *
+     * @return A new <code>Upload</code> object to use to check
+     * 		   the state of the upload, listen for progress notifications,
+     * 		   and otherwise manage the upload.
+     *
+     * @throws AmazonClientException
+     *             If any errors are encountered in the client while making the
+     *             request or handling the response.
+     * @throws AmazonServiceException
+     *             If any errors occurred in Amazon S3 while processing the
+     *             request.
+     */
+    public Upload upload(final PutObjectRequest putObjectRequest, String uploadId, List<PartETag> alreadyUploadedParts)
+        throws AmazonServiceException, AmazonClientException {
+        return upload(putObjectRequest, null, uploadId, alreadyUploadedParts);
     }
 
     /**
@@ -382,7 +425,7 @@ public class TransferManager {
      * {@link TransferStateChangeListener} to the upload object so that it can be
      * monitored.
      */
-    private Upload upload(final PutObjectRequest putObjectRequest, final TransferStateChangeListener stateListener)
+    private Upload upload(final PutObjectRequest putObjectRequest, final TransferStateChangeListener stateListener, String uploadId, List<PartETag> alreadyUploadedParts)
             throws AmazonServiceException, AmazonClientException {
 
             appendUserAgent(putObjectRequest, USER_AGENT);
@@ -413,7 +456,7 @@ public class TransferManager {
 
             UploadImpl upload = new UploadImpl(description, transferProgress, listenerChain, stateListener);
 
-            UploadCallable uploadCallable = new UploadCallable(this, threadPool, upload, putObjectRequest, listenerChain);
+            UploadCallable uploadCallable = new UploadCallable(this, threadPool, upload, putObjectRequest, listenerChain, uploadId, alreadyUploadedParts);
             UploadMonitor watcher = new UploadMonitor(this, upload, threadPool, uploadCallable, putObjectRequest, listenerChain);
             watcher.setTimedThreadPool(timedThreadPool);
             upload.setMonitor(watcher);
@@ -967,7 +1010,7 @@ public class TransferManager {
                                 .withMetadata(metadata)
                                 .withGeneralProgressListener(
                                         multipleFileTransferProgressListener),
-                        multipleFileTransferStateChangeListener));
+                        multipleFileTransferStateChangeListener, null, null));
             }
         }
 
